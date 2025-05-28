@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Rigged Model + Physics Demo (Import Map)</title>
+  <title>Rigged Model + Physics Demo with Joint Constraints</title>
   <style>
     body { margin: 0; overflow: hidden; }
     #canvas-container { width: 100vw; height: 100vh; display: block; }
@@ -26,6 +26,7 @@
     import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
     import * as CANNON from 'cannon-es';
 
+    // Scene setup
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 1000);
@@ -34,15 +35,18 @@
     renderer.setSize(innerWidth, innerHeight);
     container.appendChild(renderer.domElement);
 
+    // Controls
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0,1,0);
     controls.update();
 
+    // Lights
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
-    dir.position.set(5,10,7.5);
-    scene.add(dir);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(5,10,7.5);
+    scene.add(dirLight);
 
+    // Physics world
     const world = new CANNON.World();
     world.gravity.set(0, -9.82, 0);
     const groundBody = new CANNON.Body({
@@ -52,40 +56,86 @@
     });
     world.addBody(groundBody);
 
-    let modelGroup = new THREE.Group();
-    let body;
+    // Load model
     const loader = new GLTFLoader();
     loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', gltf => {
-      modelGroup.add(gltf.scene);
-      scene.add(modelGroup);
-      modelGroup.position.set(0, 1, 0);
-      const radius = 0.5;
-      body = new CANNON.Body({
-        mass: 1,
-        shape: new CANNON.Sphere(radius),
-        position: new CANNON.Vec3(0, 3, 0),
+      const model = gltf.scene;
+      scene.add(model);
+
+      // Bone & physics setup
+      const boneNames = [
+        'Hips','Spine','RightArm','RightForeArm',
+        'LeftArm','LeftForeArm','RightUpLeg','RightLeg',
+        'LeftUpLeg','LeftLeg'
+      ];
+      const parts = {};
+      const sphereShape = new CANNON.Sphere(0.15);
+
+      // Create bodies for each bone
+      boneNames.forEach(name => {
+        const bone = model.getObjectByName(name);
+        if (!bone) return;
+        const pos = new THREE.Vector3();
+        bone.getWorldPosition(pos);
+        const body = new CANNON.Body({
+          mass: name === 'Hips' ? 2 : 1,
+          shape: sphereShape,
+          position: new CANNON.Vec3(pos.x, pos.y, pos.z)
+        });
+        world.addBody(body);
+        parts[name] = { bone, body };
       });
-      world.addBody(body);
+
+      // Helper to connect bodies
+      function connect(pName, cName, pivotA, pivotB) {
+        if (!parts[pName] || !parts[cName]) return;
+        const A = parts[pName].body;
+        const B = parts[cName].body;
+        const constraint = new CANNON.ConeTwistConstraint(A, B, {
+          pivotA, pivotB,
+          axisA: new CANNON.Vec3(0,1,0),
+          axisB: new CANNON.Vec3(0,1,0),
+          angle: Math.PI / 4,
+          twistAngle: Math.PI / 8
+        });
+        world.addConstraint(constraint);
+      }
+
+      // Connect joints (adjust pivots as needed)
+      connect('Hips','Spine',      new CANNON.Vec3(0,0.1,0),  new CANNON.Vec3(0,-0.1,0));
+      connect('Spine','RightArm',   new CANNON.Vec3(0.2,0.4,0), new CANNON.Vec3(0,-0.2,0));
+      connect('RightArm','RightForeArm', new CANNON.Vec3(0,0.2,0), new CANNON.Vec3(0,-0.2,0));
+      connect('Spine','LeftArm',    new CANNON.Vec3(-0.2,0.4,0), new CANNON.Vec3(0,-0.2,0));
+      connect('LeftArm','LeftForeArm',   new CANNON.Vec3(0,0.2,0), new CANNON.Vec3(0,-0.2,0));
+      connect('Hips','RightUpLeg',  new CANNON.Vec3(0.15,-0.1,0), new CANNON.Vec3(0,0.2,0));
+      connect('RightUpLeg','RightLeg', new CANNON.Vec3(0,0.2,0), new CANNON.Vec3(0,-0.2,0));
+      connect('Hips','LeftUpLeg',   new CANNON.Vec3(-0.15,-0.1,0), new CANNON.Vec3(0,0.2,0));
+      connect('LeftUpLeg','LeftLeg',  new CANNON.Vec3(0,0.2,0), new CANNON.Vec3(0,-0.2,0));
+
+      // Animation loop
+      const clock = new THREE.Clock();
+      function animate() {
+        requestAnimationFrame(animate);
+        const dt = clock.getDelta();
+        world.step(1/60, dt);
+
+        // Sync bone positions
+        Object.values(parts).forEach(({ bone, body }) => {
+          bone.position.copy(body.position);
+          bone.quaternion.copy(body.quaternion);
+        });
+
+        renderer.render(scene, camera);
+      }
+      animate();
     });
 
+    // Handle resizing
     window.addEventListener('resize', () => {
       camera.aspect = innerWidth/innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
     });
-
-    const clock = new THREE.Clock();
-    function animate() {
-      requestAnimationFrame(animate);
-      const dt = clock.getDelta();
-      world.step(1/60, dt);
-      if (body && modelGroup) {
-        modelGroup.position.copy(body.position);
-        modelGroup.quaternion.copy(body.quaternion);
-      }
-      renderer.render(scene, camera);
-    }
-    animate();
   </script>
 </body>
 </html>

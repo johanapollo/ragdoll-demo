@@ -2,19 +2,30 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Rigged Model + Physics Demo</title>
+  <title>Rigged Model + Physics Demo (Import Map)</title>
   <style>
     body { margin: 0; overflow: hidden; }
     #canvas-container { width: 100vw; height: 100vh; display: block; }
   </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.150.1/build/three.module.js",
+      "three/examples/jsm/loaders/GLTFLoader.js": "https://unpkg.com/three@0.150.1/examples/jsm/loaders/GLTFLoader.js",
+      "three/examples/jsm/controls/OrbitControls.js": "https://unpkg.com/three@0.150.1/examples/jsm/controls/OrbitControls.js",
+      "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="canvas-container"></div>
-
   <script type="module">
-    import { THREE, GLTFLoader, OrbitControls, CANNON } from './vendor.js';
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+    import * as CANNON from 'cannon-es';
 
-    // ——— Scene + Renderer
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 1000);
@@ -23,18 +34,15 @@
     renderer.setSize(innerWidth, innerHeight);
     container.appendChild(renderer.domElement);
 
-    // ——— Controls
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0,1,0);
     controls.update();
 
-    // ——— Lighting
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
     const dir = new THREE.DirectionalLight(0xffffff, 0.8);
     dir.position.set(5,10,7.5);
     scene.add(dir);
 
-    // ——— Physics World
     const world = new CANNON.World();
     world.gravity.set(0, -9.82, 0);
     const groundBody = new CANNON.Body({
@@ -44,7 +52,6 @@
     });
     world.addBody(groundBody);
 
-    // ——— Model + Physics Proxy
     let modelGroup = new THREE.Group();
     let body;
     const loader = new GLTFLoader();
@@ -61,14 +68,12 @@
       world.addBody(body);
     });
 
-    // ——— Resize Handling
     window.addEventListener('resize', () => {
       camera.aspect = innerWidth/innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
     });
 
-    // ——— Animation Loop
     const clock = new THREE.Clock();
     function animate() {
       requestAnimationFrame(animate);

@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Rigged Model + Physics Demo – Natural Constraints</title>
+  <title>Rigged Model + Physics Demo – Natural Bone Motion</title>
   <style>
     body { margin: 0; overflow: hidden; }
-    #canvas-container { width:100vw; height:100vh; }
+    #canvas-container { width: 100vw; height: 100vh; }
   </style>
   <script type="importmap">
   {
@@ -49,80 +49,89 @@
     }));
 
     const loader = new GLTFLoader();
-    loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', ({ scene: model }) => {
+    loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', (gltf) => {
+      const model = gltf.scene;
       scene.add(model);
-      // collect bones and bodies
+
+      // Prepare parts: bone -> physics body and store initial local position
       const parts = {};
-      model.traverse(bone => {
+      model.traverse((bone) => {
         if (!bone.isBone) return;
+        const name = bone.name.toLowerCase();
         const pos = new THREE.Vector3();
         bone.getWorldPosition(pos);
-        const radius = 0.1 + (bone.children.length?0.05:0); // slightly larger for parent bones
-        const shape = new CANNON.Sphere(radius);
-        const mass = bone.parent.isBone?0.5:2;
-        const body = new CANNON.Body({ mass });
-        body.addShape(shape);
+        const radius = 0.12;
+        const body = new CANNON.Body({ mass: bone.parent.isBone ? 0.5 : 2 });
+        body.addShape(new CANNON.Sphere(radius));
         body.position.set(pos.x, pos.y, pos.z);
         world.addBody(body);
-        parts[bone.name.toLowerCase()] = { bone, body };
+        parts[name] = {
+          bone,
+          body,
+          initialPosition: bone.position.clone()
+        };
       });
 
-      // constraint helper using proper pivots
-      function connect(nameA, nameB, options={angle:Math.PI/4, twistAngle:Math.PI/8}) {
-        const partA = parts[nameA];
-        const partB = parts[nameB];
-        if (!partA || !partB) return;
-        // world-space joint position: use B bone world position
+      // Helper to get part by key
+      const get = key => parts[Object.keys(parts).find(n => n.includes(key))];
+
+      // Constraint helper
+      function connect(aKey, bKey, opts) {
+        const A = get(aKey)?.body;
+        const B = get(bKey)?.body;
+        if (!A || !B) return;
+        // joint world position: B bone world pos
         const jointPos = new THREE.Vector3();
-        partB.bone.getWorldPosition(jointPos);
-        // pivots in local body coords
-        const pivotA = new CANNON.Vec3(jointPos.x, jointPos.y, jointPos.z).vsub(partA.body.position);
-        const pivotB = new CANNON.Vec3(jointPos.x, jointPos.y, jointPos.z).vsub(partB.body.position);
+        get(bKey).bone.getWorldPosition(jointPos);
+        // pivots local
+        const pivotA = new CANNON.Vec3(jointPos.x, jointPos.y, jointPos.z).vsub(A.position);
+        const pivotB = new CANNON.Vec3(jointPos.x, jointPos.y, jointPos.z).vsub(B.position);
         const axis = new CANNON.Vec3(1,0,0);
-        const c = new CANNON.ConeTwistConstraint(partA.body, partB.body, {
-          pivotA, pivotB, axisA:axis, axisB:axis,
-          angle: options.angle, twistAngle: options.twistAngle
+        const c = new CANNON.ConeTwistConstraint(A, B, {
+          pivotA, pivotB, axisA: axis, axisB: axis,
+          angle: opts.angle, twistAngle: opts.twistAngle
         });
         world.addConstraint(c);
       }
 
-      // define which bones to connect and their params
-      const mapping = [
-        ['hips','spine',{angle:Math.PI/8, twistAngle:Math.PI/16}],
-        ['spine','rightarm',{angle:Math.PI/6, twistAngle:Math.PI/12}],
-        ['spine','leftarm',{angle:Math.PI/6, twistAngle:Math.PI/12}],
-        ['rightarm','rightforearm',{angle:0, twistAngle:Math.PI/2}],
-        ['leftarm','leftforearm',{angle:0, twistAngle:Math.PI/2}],
-        ['hips','rightupleg',{angle:Math.PI/8, twistAngle:Math.PI/12}],
-        ['hips','leftupleg',{angle:Math.PI/8, twistAngle:Math.PI/12}],
-        ['rightupleg','rightleg',{angle:0, twistAngle:Math.PI/2}],
-        ['leftupleg','leftleg',{angle:0, twistAngle:Math.PI/2}],
-      ];
-      mapping.forEach(([a,b,opts]) => connect(a,b,opts));
+      // Define connections with angles
+      connect('hips', 'spine',      { angle: Math.PI/8, twistAngle: Math.PI/16 });
+      connect('spine', 'rightarm',  { angle: Math.PI/6, twistAngle: Math.PI/12 });
+      connect('spine', 'leftarm',   { angle: Math.PI/6, twistAngle: Math.PI/12 });
+      connect('rightarm', 'rightforearm', { angle: 0, twistAngle: Math.PI/2 });
+      connect('leftarm', 'leftforearm',   { angle: 0, twistAngle: Math.PI/2 });
+      connect('hips', 'rightupleg', { angle: Math.PI/8, twistAngle: Math.PI/12 });
+      connect('hips', 'leftupleg',  { angle: Math.PI/8, twistAngle: Math.PI/12 });
+      connect('rightupleg', 'rightleg',    { angle: 0, twistAngle: Math.PI/2 });
+      connect('leftupleg', 'leftleg',      { angle: 0, twistAngle: Math.PI/2 });
 
-      // animation loop
+      // Animation loop
       const clock = new THREE.Clock();
-      (function animate() {
+      function animate() {
         requestAnimationFrame(animate);
-        world.step(1/60, clock.getDelta());
-        // sync bone transforms
-        Object.values(parts).forEach(({ bone, body }) => {
-          const wp = new THREE.Vector3(body.position.x, body.position.y, body.position.z);
-          bone.parent.worldToLocal(wp);
-          bone.position.copy(wp);
+        const dt = clock.getDelta();
+        world.step(1/60, dt);
+
+        // Sync bone rotation only, preserve initial local position
+        Object.values(parts).forEach(({ bone, body, initialPosition }) => {
+          bone.position.copy(initialPosition);
+          // compute local quaternion from physics world quaternion
           const wq = new THREE.Quaternion(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
           const pwq = bone.parent.getWorldQuaternion(new THREE.Quaternion());
-          bone.quaternion.copy(wq.clone().premultiply(pwq.invert()));
+          const lq = wq.clone().premultiply(pwq.invert());
+          bone.quaternion.copy(lq);
         });
+
         renderer.render(scene, camera);
-      })();
+      }
+      animate();
     });
 
-    // resize
-    window.addEventListener('resize',()=>{
-      camera.aspect=window.innerWidth/window.innerHeight;
+    // Handle resize
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth/window.innerHeight;
       camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth,window.innerHeight);
+      renderer.setSize(window.innerWidth, window.innerHeight);
     });
   </script>
 </body>

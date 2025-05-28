@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Rigged Model + Physics – Realistic Ragdoll</title>
+  <title>Rigged Model + Physics Demo – Collision Shapes</title>
   <style>
     body { margin: 0; overflow: hidden; }
-    #canvas-container { width: 100vw; height: 100vh; }
+    #canvas-container { width:100vw; height:100vh; }
   </style>
   <script type="importmap">
   {
@@ -26,7 +26,7 @@
     import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
     import * as CANNON from 'cannon-es';
 
-    // Scene setup
+    // Setup scene
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
     camera.position.set(0, 1.5, 3);
@@ -34,7 +34,6 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.getElementById('canvas-container').appendChild(renderer.domElement);
     new OrbitControls(camera, renderer.domElement).target.set(0,1,0);
-
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
     const dir = new THREE.DirectionalLight(0xffffff, 0.8);
     dir.position.set(5,10,7.5);
@@ -44,116 +43,103 @@
     const world = new CANNON.World();
     world.gravity.set(0, -9.82, 0);
     world.broadphase = new CANNON.SAPBroadphase(world);
-    world.solver.iterations = 10;
-    world.defaultContactMaterial.friction = 0.4;
-
+    world.solver.iterations = 20;
     const ground = new CANNON.Body({ mass: 0 });
     ground.addShape(new CANNON.Plane());
-    ground.quaternion.setFromEuler(-Math.PI/2,0,0);
+    ground.quaternion.setFromEuler(-Math.PI/2, 0, 0);
     world.addBody(ground);
 
+    // Load model & create bodies with box shapes
     const loader = new GLTFLoader();
     loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', ({ scene: model }) => {
       scene.add(model);
-
       const parts = {};
-      const springs = [];
+      // Helper to add box shape
+      function addBox(body, hx, hy, hz) {
+        const box = new CANNON.Box(new CANNON.Vec3(hx, hy, hz));
+        body.addShape(box);
+      }
 
-      // Create bodies
-      model.traverse(bone => {
+      model.traverse((bone) => {
         if (!bone.isBone) return;
-        const pos = new THREE.Vector3();
-        bone.getWorldPosition(pos);
-        const radius = 0.1;
+        const pos = new THREE.Vector3(); bone.getWorldPosition(pos);
+        const name = bone.name.toLowerCase();
         const body = new CANNON.Body({
           mass: bone.parent.isBone ? 1 : 5,
           linearDamping: 0.9,
           angularDamping: 0.9
         });
-        body.addShape(new CANNON.Sphere(radius));
         body.position.set(pos.x, pos.y, pos.z);
+
+        // Choose box size based on bone role
+        if (name.includes('hip') || name.includes('spine')) {
+          addBox(body, 0.3, 0.4, 0.15);
+        } else if (name.includes('arm') && !name.includes('forearm')) {
+          addBox(body, 0.1, 0.25, 0.1);
+        } else if (name.includes('forearm')) {
+          addBox(body, 0.1, 0.2, 0.1);
+        } else if (name.includes('upleg') || name.includes('thigh')) {
+          addBox(body, 0.12, 0.3, 0.12);
+        } else if (name.includes('leg') || name.includes('shin')) {
+          addBox(body, 0.12, 0.25, 0.12);
+        } else {
+          // default small box
+          addBox(body, 0.1, 0.1, 0.1);
+        }
         world.addBody(body);
-        parts[bone.name.toLowerCase()] = { bone, body };
+        parts[name] = { bone, body };
       });
 
-      // Helper to find parts
-      const get = key => parts[Object.keys(parts).find(n => n.includes(key))];
-
-      // Joint mapping for constraints and springs
-      const links = [
-        ['hips','spine',{angle:Math.PI/12,twist:Math.PI/20}],
-        ['spine','rightarm',{angle:Math.PI/8,twist:Math.PI/12}],
-        ['spine','leftarm',{angle:Math.PI/8,twist:Math.PI/12}],
-        ['rightarm','rightforearm',{angle:0,twist:Math.PI/2}],
-        ['leftarm','leftforearm',{angle:0,twist:Math.PI/2}],
-        ['hips','rightupleg',{angle:Math.PI/12,twist:Math.PI/12}],
-        ['hips','leftupleg',{angle:Math.PI/12,twist:Math.PI/12}],
-        ['rightupleg','rightleg',{angle:0,twist:Math.PI/2}],
-        ['leftupleg','leftleg',{angle:0,twist:Math.PI/2}]
-      ];
-
-      // Create ConeTwistConstraints and Springs
-      links.forEach(([aKey,bKey,opts]) => {
-        const A = get(aKey)?.body;
-        const B = get(bKey)?.body;
-        if (!A||!B) return;
-        // compute joint world pos
+      // Constraint helper
+      function connect(a, b, angle = Math.PI/8, twist = Math.PI/12) {
+        const A = parts[a]?.body, B = parts[b]?.body;
+        if (!A || !B) return;
         const worldPos = new THREE.Vector3();
-        get(bKey).bone.getWorldPosition(worldPos);
-        // pivots in local coords
+        parts[b].bone.getWorldPosition(worldPos);
         const pivotA = new CANNON.Vec3(worldPos.x, worldPos.y, worldPos.z).vsub(A.position);
         const pivotB = new CANNON.Vec3(worldPos.x, worldPos.y, worldPos.z).vsub(B.position);
-
-        // Constraint
-        const c = new CANNON.ConeTwistConstraint(A,B,{
+        const c = new CANNON.ConeTwistConstraint(A, B, {
           pivotA, pivotB,
           axisA: new CANNON.Vec3(1,0,0),
           axisB: new CANNON.Vec3(1,0,0),
-          angle: opts.angle,
-          twistAngle: opts.twist
+          angle, twistAngle: twist
         });
         world.addConstraint(c);
+      }
 
-        // Spring for muscle effect
-        const spring = new CANNON.Spring(A,B,{
-          localAnchorA: pivotA,
-          localAnchorB: pivotB,
-          restLength: 0,
-          stiffness: 200,
-          damping: 10
-        });
-        springs.push(spring);
-      });
+      // Define joint connections
+      const joints = [
+        ['hips','spine',Math.PI/12,Math.PI/16],
+        ['spine','rightarm',Math.PI/8,Math.PI/12],
+        ['spine','leftarm',Math.PI/8,Math.PI/12],
+        ['rightarm','rightforearm',0,Math.PI/2],
+        ['leftarm','leftforearm',0,Math.PI/2],
+        ['hips','rightupleg',Math.PI/12,Math.PI/12],
+        ['hips','leftupleg',Math.PI/12,Math.PI/12],
+        ['rightupleg','rightleg',0,Math.PI/2],
+        ['leftupleg','leftleg',0,Math.PI/2]
+      ];
+      joints.forEach(([a,b,ang,t]) => connect(a,b,ang,t));
 
-      // Post-step apply springs
-      world.addEventListener('postStep', () => {
-        springs.forEach(s => s.applyForce());
-      });
-
-      // Animation loop
+      // Animation
       const clock = new THREE.Clock();
       (function animate() {
         requestAnimationFrame(animate);
-        const dt = clock.getDelta();
-        world.step(1/60, dt);
-
-        // sync bones
+        world.step(1/60, clock.getDelta());
         Object.values(parts).forEach(({ bone, body }) => {
-          // preserve initial local position
-          const initial = bone.position.clone();
-          bone.parent.worldToLocal(initial);
-          // position remains as per rig
-          bone.position.copy(bone.position);
-          // rotation from physics
-          const wq = new THREE.Quaternion(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
-          const parentQ = bone.parent.getWorldQuaternion(new THREE.Quaternion());
-          bone.quaternion.copy(wq.clone().premultiply(parentQ.invert()));
+          const wp = new THREE.Vector3(body.position.x, body.position.y, body.position.z);
+          bone.parent.worldToLocal(wp);
+          bone.position.copy(wp);
+          const wq = new THREE.Quaternion(body.quaternion.x, body.quaternion.y,
+                                          body.quaternion.z, body.quaternion.w);
+          const pwq = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+          bone.quaternion.copy(wq.clone().premultiply(pwq.invert()));
         });
-
         renderer.render(scene, camera);
       })();
     });
 
+    // Resize
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth/window.innerHeight;
       camera.updateProjectionMatrix();

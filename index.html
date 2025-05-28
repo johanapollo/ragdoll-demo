@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Rigged Model + Physics Demo with Joint Constraints</title>
+  <title>Rigged Model + Physics Demo - Dynamic Joints</title>
   <style>
     body { margin: 0; overflow: hidden; }
     #canvas-container { width: 100vw; height: 100vh; display: block; }
@@ -26,7 +26,7 @@
     import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
     import * as CANNON from 'cannon-es';
 
-    // Scene setup
+    // Set up scene, camera, renderer
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 1000);
@@ -42,9 +42,9 @@
 
     // Lights
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(5,10,7.5);
-    scene.add(dirLight);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    dir.position.set(5,10,7.5);
+    scene.add(dir);
 
     // Physics world
     const world = new CANNON.World();
@@ -62,75 +62,57 @@
       const model = gltf.scene;
       scene.add(model);
 
-      // Bone & physics setup
-      const boneNames = [
-        'Hips','Spine','RightArm','RightForeArm',
-        'LeftArm','LeftForeArm','RightUpLeg','RightLeg',
-        'LeftUpLeg','LeftLeg'
-      ];
+      // Find the skinned mesh and its skeleton
+      const skinnedMesh = model.getObjectByProperty('type', 'SkinnedMesh');
+      const skeleton = skinnedMesh.skeleton;
+      const bones = skeleton.bones;
       const parts = {};
-      const sphereShape = new CANNON.Sphere(0.15);
 
-      // Create bodies for each bone
-      boneNames.forEach(name => {
-        const bone = model.getObjectByName(name);
-        if (!bone) return;
+      // Create a body for each bone
+      bones.forEach(bone => {
         const pos = new THREE.Vector3();
         bone.getWorldPosition(pos);
-        const body = new CANNON.Body({
-          mass: name === 'Hips' ? 2 : 1,
-          shape: sphereShape,
-          position: new CANNON.Vec3(pos.x, pos.y, pos.z)
-        });
+        const shape = new CANNON.Sphere(0.1);
+        const mass = bone.parent.isBone ? 0.5 : 2;
+        const body = new CANNON.Body({ mass, shape, position: new CANNON.Vec3(pos.x, pos.y, pos.z) });
         world.addBody(body);
-        parts[name] = { bone, body };
+        parts[bone.uuid] = { bone, body };
       });
 
-      // Helper to connect bodies
-      function connect(pName, cName, pivotA, pivotB) {
-        if (!parts[pName] || !parts[cName]) return;
-        const A = parts[pName].body;
-        const B = parts[cName].body;
+      // Connect each bone to its parent with a cone-twist constraint
+      bones.forEach(bone => {
+        if (!bone.parent || !parts[bone.parent.uuid]) return;
+        const A = parts[bone.parent.uuid].body;
+        const B = parts[bone.uuid].body;
+        // Pivot at child position relative to parent
+        const pivotA = new CANNON.Vec3().copy(B.position).vsub(A.position);
+        const pivotB = new CANNON.Vec3(0, 0, 0);
         const constraint = new CANNON.ConeTwistConstraint(A, B, {
           pivotA, pivotB,
-          axisA: new CANNON.Vec3(0,1,0),
-          axisB: new CANNON.Vec3(0,1,0),
+          axisA: new CANNON.Vec3(1, 0, 0),
+          axisB: new CANNON.Vec3(1, 0, 0),
           angle: Math.PI / 4,
           twistAngle: Math.PI / 8
         });
         world.addConstraint(constraint);
-      }
-
-      // Connect joints (adjust pivots as needed)
-      connect('Hips','Spine',      new CANNON.Vec3(0,0.1,0),  new CANNON.Vec3(0,-0.1,0));
-      connect('Spine','RightArm',   new CANNON.Vec3(0.2,0.4,0), new CANNON.Vec3(0,-0.2,0));
-      connect('RightArm','RightForeArm', new CANNON.Vec3(0,0.2,0), new CANNON.Vec3(0,-0.2,0));
-      connect('Spine','LeftArm',    new CANNON.Vec3(-0.2,0.4,0), new CANNON.Vec3(0,-0.2,0));
-      connect('LeftArm','LeftForeArm',   new CANNON.Vec3(0,0.2,0), new CANNON.Vec3(0,-0.2,0));
-      connect('Hips','RightUpLeg',  new CANNON.Vec3(0.15,-0.1,0), new CANNON.Vec3(0,0.2,0));
-      connect('RightUpLeg','RightLeg', new CANNON.Vec3(0,0.2,0), new CANNON.Vec3(0,-0.2,0));
-      connect('Hips','LeftUpLeg',   new CANNON.Vec3(-0.15,-0.1,0), new CANNON.Vec3(0,0.2,0));
-      connect('LeftUpLeg','LeftLeg',  new CANNON.Vec3(0,0.2,0), new CANNON.Vec3(0,-0.2,0));
+      });
 
       // Animation loop
       const clock = new THREE.Clock();
-      function animate() {
+      (function animate() {
         requestAnimationFrame(animate);
         const dt = clock.getDelta();
         world.step(1/60, dt);
-
-        // Sync bone positions
+        // Copy physics transforms back to bones
         Object.values(parts).forEach(({ bone, body }) => {
           bone.position.copy(body.position);
           bone.quaternion.copy(body.quaternion);
         });
-
         renderer.render(scene, camera);
-      }
-      animate();
+      })();
     });
 
-    // Handle resizing
+    // Handle window resize
     window.addEventListener('resize', () => {
       camera.aspect = innerWidth/innerHeight;
       camera.updateProjectionMatrix();

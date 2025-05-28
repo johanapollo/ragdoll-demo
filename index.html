@@ -2,22 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Rigged Model + Physics Debugger</title>
+  <title>Rigged Model + Physics Debugger (Fixed)</title>
   <style>
     body { margin: 0; overflow: hidden; }
     #canvas-container { width:100vw; height:100vh; }
   </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.150.1/build/three.module.js",
+      "three/examples/jsm/loaders/GLTFLoader.js": "https://unpkg.com/three@0.150.1/examples/jsm/loaders/GLTFLoader.js",
+      "three/examples/jsm/controls/OrbitControls.js": "https://unpkg.com/three@0.150.1/examples/jsm/controls/OrbitControls.js",
+      "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js",
+      "cannon-es-debugger": "https://cdn.jsdelivr.net/npm/cannon-es-debugger@1.0.0/dist/cannon-es-debugger.esm.js"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="canvas-container"></div>
   <script type="module">
-    import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
-    import { GLTFLoader } from 'https://unpkg.com/three@0.150.1/examples/jsm/loaders/GLTFLoader.js';
-    import { OrbitControls } from 'https://unpkg.com/three@0.150.1/examples/jsm/controls/OrbitControls.js';
-    import * as CANNON from 'https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js';
-    import CannonDebugger from 'https://unpkg.com/cannon-es-debugger@1.0.0/dist/cannon-es-debugger.esm.js';
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+    import * as CANNON from 'cannon-es';
+    import CannonDebugger from 'cannon-es-debugger';
 
-    // Three.js setup
+    // Setup Three.js scene
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 1000);
@@ -29,9 +40,9 @@
     new OrbitControls(camera, renderer.domElement).target.set(0,1,0);
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
-    dir.position.set(5,10,7.5);
-    scene.add(dir);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(5,10,7.5);
+    scene.add(dirLight);
 
     // Cannon.js world
     const world = new CANNON.World();
@@ -39,21 +50,33 @@
     world.broadphase = new CANNON.SAPBroadphase(world);
     world.solver.iterations = 20;
 
-    // Ground plane
-    const groundBody = new CANNON.Body({ mass: 0 });
-    groundBody.addShape(new CANNON.Plane());
-    groundBody.quaternion.setFromEuler(-Math.PI/2, 0, 0);
-    world.addBody(groundBody);
+    // Ground
+    const ground = new CANNON.Body({ mass: 0 });
+    ground.addShape(new CANNON.Plane());
+    ground.quaternion.setFromEuler(-Math.PI/2,0,0);
+    world.addBody(ground);
 
-    // Attach debugger
-    const cannonDebugger = new CannonDebugger(scene, world);
+    // Attach debugger AFTER world is set up
+    const cannonDebugger = new CannonDebugger(scene, world, {
+      color: 0x00ff00,
+      scale: 1
+    });
 
-    // Load GLTF and create ragdoll...
+    // Load model & physics setup (example)
     const loader = new GLTFLoader();
     loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', ({ scene: model }) => {
       scene.add(model);
-      // [Your collider & constraint setup code here, unchanged]
-      // ...
+      // === Physics body & constraint setup code goes here ===
+      // Example: create a single sphere body at Hips for testing
+      const hips = model.getObjectByName('Hips');
+      if (hips) {
+        const pos = new THREE.Vector3();
+        hips.getWorldPosition(pos);
+        const body = new CANNON.Body({ mass: 1 });
+        body.addShape(new CANNON.Sphere(0.5));
+        body.position.set(pos.x, pos.y, pos.z);
+        world.addBody(body);
+      }
     });
 
     // Animation loop
@@ -61,9 +84,7 @@
     function animate() {
       requestAnimationFrame(animate);
       world.step(1/60, clock.getDelta());
-      // update ragdoll bones...
-      // ...
-      // update debug visuals
+      // Update debugger visuals each frame
       cannonDebugger.update();
       renderer.render(scene, camera);
     }

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Rigged Model + Physics Debugger (Fixed)</title>
+  <title>Ragdoll Physics + Debugger</title>
   <style>
     body { margin: 0; overflow: hidden; }
     #canvas-container { width:100vw; height:100vh; }
@@ -14,7 +14,7 @@
       "three/examples/jsm/loaders/GLTFLoader.js": "https://unpkg.com/three@0.150.1/examples/jsm/loaders/GLTFLoader.js",
       "three/examples/jsm/controls/OrbitControls.js": "https://unpkg.com/three@0.150.1/examples/jsm/controls/OrbitControls.js",
       "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js",
-      "cannon-es-debugger": "https://cdn.jsdelivr.net/npm/cannon-es-debugger@1.0.0/dist/cannon-es-debugger.esm.js"
+      "cannon-es-debugger": "https://cdn.jsdelivr.net/npm/cannon-es-debugger@0.1.4/dist/cannon-es-debugger.js"
     }
   }
   </script>
@@ -28,7 +28,7 @@
     import * as CANNON from 'cannon-es';
     import CannonDebugger from 'cannon-es-debugger';
 
-    // Setup Three.js scene
+    // Three.js setup
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 1000);
@@ -36,15 +36,15 @@
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(innerWidth, innerHeight);
     container.appendChild(renderer.domElement);
-
     new OrbitControls(camera, renderer.domElement).target.set(0,1,0);
 
+    // Lights
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(5,10,7.5);
-    scene.add(dirLight);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    dir.position.set(5,10,7.5);
+    scene.add(dir);
 
-    // Cannon.js world
+    // Physics world
     const world = new CANNON.World();
     world.gravity.set(0, -9.82, 0);
     world.broadphase = new CANNON.SAPBroadphase(world);
@@ -53,43 +53,71 @@
     // Ground
     const ground = new CANNON.Body({ mass: 0 });
     ground.addShape(new CANNON.Plane());
-    ground.quaternion.setFromEuler(-Math.PI/2,0,0);
+    ground.quaternion.setFromEuler(-Math.PI/2, 0, 0);
     world.addBody(ground);
 
-    // Attach debugger AFTER world is set up
-    const cannonDebugger = new CannonDebugger(scene, world, {
-      color: 0x00ff00,
-      scale: 1
-    });
+    // Add debugger
+    const cannonDebugger = new CannonDebugger(scene, world, { color: 0x00ff00, scale: 1 });
 
-    // Load model & physics setup (example)
+    // Ragdoll setup (simplified cylinder colliders)
     const loader = new GLTFLoader();
+    const parts = {};
     loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', ({ scene: model }) => {
       scene.add(model);
-      // === Physics body & constraint setup code goes here ===
-      // Example: create a single sphere body at Hips for testing
-      const hips = model.getObjectByName('Hips');
-      if (hips) {
-        const pos = new THREE.Vector3();
-        hips.getWorldPosition(pos);
-        const body = new CANNON.Body({ mass: 1 });
-        body.addShape(new CANNON.Sphere(0.5));
-        body.position.set(pos.x, pos.y, pos.z);
+      model.traverse(bone => {
+        if (!bone.isBone) return;
+        const childBones = bone.children.filter(c => c.isBone);
+        const body = new CANNON.Body({ 
+          mass: bone.parent.isBone ? 1 : 5, 
+          linearDamping: 0.9, 
+          angularDamping: 0.9 
+        });
+        if (childBones.length === 1) {
+          // Cylinder collider
+          const pA = new THREE.Vector3(), pB = new THREE.Vector3();
+          bone.getWorldPosition(pA);
+          childBones[0].getWorldPosition(pB);
+          const dir = new THREE.Vector3().subVectors(pB, pA);
+          const length = dir.length();
+          const mid = new THREE.Vector3().addVectors(pA, pB).multiplyScalar(0.5);
+          body.position.set(mid.x, mid.y, mid.z);
+          const cyl = new CANNON.Cylinder(0.1, 0.1, length, 8);
+          const axis = new CANNON.Vec3(0,1,0);
+          const dirC = new CANNON.Vec3(dir.x, dir.y, dir.z).unit();
+          const quat = new CANNON.Quaternion().setFromVectors(axis, dirC);
+          body.addShape(cyl, new CANNON.Vec3(0,0,0), quat);
+        } else {
+          // Sphere collider
+          const pos = new THREE.Vector3();
+          bone.getWorldPosition(pos);
+          body.position.set(pos.x, pos.y, pos.z);
+          body.addShape(new CANNON.Sphere(0.12));
+        }
         world.addBody(body);
+        parts[bone.name.toLowerCase()] = { bone, body };
+      });
+      // Simple constraint demo: hips to spine
+      const hip = parts['hips']?.body, spine = parts['spine']?.body;
+      if (hip && spine) {
+        const pivotA = new CANNON.Vec3().copy(spine.position).vsub(hip.position);
+        const pivotB = new CANNON.Vec3(0,0,0);
+        world.addConstraint(new CANNON.ConeTwistConstraint(hip, spine, {
+          pivotA, pivotB, axisA: new CANNON.Vec3(1,0,0), axisB: new CANNON.Vec3(1,0,0),
+          angle: Math.PI/8, twistAngle: Math.PI/16
+        }));
       }
     });
 
     // Animation loop
     const clock = new THREE.Clock();
-    function animate() {
+    (function animate() {
       requestAnimationFrame(animate);
       world.step(1/60, clock.getDelta());
-      // Update debugger visuals each frame
       cannonDebugger.update();
       renderer.render(scene, camera);
-    }
-    animate();
+    })();
 
+    // Resize handling
     window.addEventListener('resize', () => {
       camera.aspect = innerWidth/innerHeight;
       camera.updateProjectionMatrix();

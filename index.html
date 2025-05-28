@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Rigged Model + Physics Demo – Fixed Ragdoll</title>
+  <title>Rigged Model + Physics Demo – Refined Ragdoll</title>
   <style>
-    body { margin: 0; overflow: hidden }
-    #canvas-container { width:100vw; height:100vh }
+    body { margin: 0; overflow: hidden; }
+    #canvas-container { width:100vw; height:100vh; }
   </style>
   <script type="importmap">
   {
@@ -26,7 +26,7 @@
     import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
     import * as CANNON from 'cannon-es';
 
-    // — Scene, camera, renderer, controls, lights, physics world…
+    // Setup scene, camera, renderer
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 1000);
@@ -35,15 +35,12 @@
     renderer.setSize(innerWidth, innerHeight);
     container.appendChild(renderer.domElement);
 
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0,1,0);
-    controls.update();
-
+    // Controls & light
+    new OrbitControls(camera, renderer.domElement).target.set(0,1,0);
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
-    dir.position.set(5,10,7.5);
-    scene.add(dir);
+    scene.add(new THREE.DirectionalLight(0xffffff, 0.8).position.set(5,10,7.5));
 
+    // Physics world
     const world = new CANNON.World();
     world.gravity.set(0, -9.82, 0);
     world.addBody(new CANNON.Body({
@@ -52,74 +49,75 @@
       quaternion: new CANNON.Quaternion().setFromEuler(-Math.PI/2, 0, 0)
     }));
 
-    // — Load model + set up bodies & constraints
+    // Load GLTF model
     const loader = new GLTFLoader();
     const parts = {};
     loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', gltf => {
       const model = gltf.scene;
       scene.add(model);
 
-      // build one sphere body per bone
-      const sphere = new CANNON.Sphere(0.1);
-      model.traverse(obj => {
-        if (obj.isBone) {
-          const pos = new THREE.Vector3();
-          obj.getWorldPosition(pos);
-          const body = new CANNON.Body({
-            mass: obj.parent.isBone ? 0.5 : 2,
-            shape: sphere,
-            position: new CANNON.Vec3(pos.x, pos.y, pos.z)
-          });
-          world.addBody(body);
-          parts[obj.uuid] = { bone: obj, body };
-        }
+      // Use larger sphere shapes and stiffer constraints
+      const boneBodies = [];
+      model.traverse((bone) => {
+        if (!bone.isBone) return;
+        const pos = new THREE.Vector3();
+        bone.getWorldPosition(pos);
+        const radius = 0.2; // increased radius
+        const sphere = new CANNON.Sphere(radius);
+        const mass = bone.parent.isBone ? 0.5 : 2;
+        const body = new CANNON.Body({ mass });
+        body.addShape(sphere);
+        body.position.set(pos.x, pos.y, pos.z);
+        world.addBody(body);
+        parts[bone.uuid] = { bone, body };
+
+        // keep list for constraints
+        boneBodies.push(bone);
       });
 
-      // glue each bone to its parent
-      Object.values(parts).forEach(({ bone, body }) => {
-        if (!bone.parent.isBone) return;
-        const A = parts[bone.parent.uuid].body;
-        const B = body;
-        const pivotA = new CANNON.Vec3().copy(B.position).vsub(A.position);
-        const pivotB = new CANNON.Vec3(0,0,0);
-        const c = new CANNON.ConeTwistConstraint(A, B, {
+      // Connect bones to their parents with tighter angles
+      boneBodies.forEach((bone) => {
+        const parent = bone.parent;
+        if (!parent.isBone) return;
+        const A = parts[parent.uuid].body;
+        const B = parts[bone.uuid].body;
+        const pivotA = B.position.vsub(A.position);
+        const pivotB = new CANNON.Vec3(0, 0, 0);
+        const constraint = new CANNON.ConeTwistConstraint(A, B, {
           pivotA, pivotB,
-          axisA: new CANNON.Vec3(1,0,0),
-          axisB: new CANNON.Vec3(1,0,0),
-          angle: Math.PI/4,
-          twistAngle: Math.PI/8
+          axisA: new CANNON.Vec3(1, 0, 0),
+          axisB: new CANNON.Vec3(1, 0, 0),
+          angle: Math.PI / 8,       // tighter swing
+          twistAngle: Math.PI / 16  // tighter twist
         });
-        world.addConstraint(c);
+        world.addConstraint(constraint);
       });
 
-      // — Render & physics loop
+      // Animation loop with local-space sync
       const clock = new THREE.Clock();
-      (function animate() {
+      function animate() {
         requestAnimationFrame(animate);
         const dt = clock.getDelta();
         world.step(1/60, dt);
 
-        // *** LOCAL-SPACE SYNC FIX ***
         Object.values(parts).forEach(({ bone, body }) => {
-          // world → local position
+          // world to local position
           const wp = new THREE.Vector3(body.position.x, body.position.y, body.position.z);
           bone.parent.worldToLocal(wp);
           bone.position.copy(wp);
 
-          // world → local quaternion
-          const wq = new THREE.Quaternion(
-            body.quaternion.x, body.quaternion.y,
-            body.quaternion.z, body.quaternion.w
-          );
+          // world to local quaternion
+          const wq = new THREE.Quaternion(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
           const pwq = bone.parent.getWorldQuaternion(new THREE.Quaternion());
-          const lq = wq.clone().premultiply(pwq.invert());
-          bone.quaternion.copy(lq);
+          bone.quaternion.copy(wq.clone().premultiply(pwq.invert()));
         });
 
         renderer.render(scene, camera);
-      })();
+      }
+      animate();
     });
 
+    // Resize handler
     window.addEventListener('resize', () => {
       camera.aspect = innerWidth/innerHeight;
       camera.updateProjectionMatrix();

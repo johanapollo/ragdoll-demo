@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Rigged Model + Physics Demo – Natural Bone Motion</title>
+  <title>Rigged Model + Physics – Realistic Ragdoll</title>
   <style>
     body { margin: 0; overflow: hidden; }
     #canvas-container { width: 100vw; height: 100vh; }
@@ -26,108 +26,134 @@
     import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
     import * as CANNON from 'cannon-es';
 
-    // Basic setup
+    // Scene setup
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
     camera.position.set(0, 1.5, 3);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    document.getElementById('canvas-container')?.appendChild(renderer.domElement);
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
     new OrbitControls(camera, renderer.domElement).target.set(0,1,0);
+
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
-    const dl = new THREE.DirectionalLight(0xffffff, 0.8);
-    dl.position.set(5,10,7.5);
-    scene.add(dl);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    dir.position.set(5,10,7.5);
+    scene.add(dir);
 
     // Physics world
     const world = new CANNON.World();
     world.gravity.set(0, -9.82, 0);
-    world.addBody(new CANNON.Body({
-      mass: 0,
-      shape: new CANNON.Plane(),
-      quaternion: new CANNON.Quaternion().setFromEuler(-Math.PI/2,0,0)
-    }));
+    world.broadphase = new CANNON.SAPBroadphase(world);
+    world.solver.iterations = 10;
+    world.defaultContactMaterial.friction = 0.4;
+
+    const ground = new CANNON.Body({ mass: 0 });
+    ground.addShape(new CANNON.Plane());
+    ground.quaternion.setFromEuler(-Math.PI/2,0,0);
+    world.addBody(ground);
 
     const loader = new GLTFLoader();
-    loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', (gltf) => {
-      const model = gltf.scene;
+    loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', ({ scene: model }) => {
       scene.add(model);
 
-      // Prepare parts: bone -> physics body and store initial local position
       const parts = {};
-      model.traverse((bone) => {
+      const springs = [];
+
+      // Create bodies
+      model.traverse(bone => {
         if (!bone.isBone) return;
-        const name = bone.name.toLowerCase();
         const pos = new THREE.Vector3();
         bone.getWorldPosition(pos);
-        const radius = 0.12;
-        const body = new CANNON.Body({ mass: bone.parent.isBone ? 0.5 : 2 });
+        const radius = 0.1;
+        const body = new CANNON.Body({
+          mass: bone.parent.isBone ? 1 : 5,
+          linearDamping: 0.9,
+          angularDamping: 0.9
+        });
         body.addShape(new CANNON.Sphere(radius));
         body.position.set(pos.x, pos.y, pos.z);
         world.addBody(body);
-        parts[name] = {
-          bone,
-          body,
-          initialPosition: bone.position.clone()
-        };
+        parts[bone.name.toLowerCase()] = { bone, body };
       });
 
-      // Helper to get part by key
+      // Helper to find parts
       const get = key => parts[Object.keys(parts).find(n => n.includes(key))];
 
-      // Constraint helper
-      function connect(aKey, bKey, opts) {
+      // Joint mapping for constraints and springs
+      const links = [
+        ['hips','spine',{angle:Math.PI/12,twist:Math.PI/20}],
+        ['spine','rightarm',{angle:Math.PI/8,twist:Math.PI/12}],
+        ['spine','leftarm',{angle:Math.PI/8,twist:Math.PI/12}],
+        ['rightarm','rightforearm',{angle:0,twist:Math.PI/2}],
+        ['leftarm','leftforearm',{angle:0,twist:Math.PI/2}],
+        ['hips','rightupleg',{angle:Math.PI/12,twist:Math.PI/12}],
+        ['hips','leftupleg',{angle:Math.PI/12,twist:Math.PI/12}],
+        ['rightupleg','rightleg',{angle:0,twist:Math.PI/2}],
+        ['leftupleg','leftleg',{angle:0,twist:Math.PI/2}]
+      ];
+
+      // Create ConeTwistConstraints and Springs
+      links.forEach(([aKey,bKey,opts]) => {
         const A = get(aKey)?.body;
         const B = get(bKey)?.body;
-        if (!A || !B) return;
-        // joint world position: B bone world pos
-        const jointPos = new THREE.Vector3();
-        get(bKey).bone.getWorldPosition(jointPos);
-        // pivots local
-        const pivotA = new CANNON.Vec3(jointPos.x, jointPos.y, jointPos.z).vsub(A.position);
-        const pivotB = new CANNON.Vec3(jointPos.x, jointPos.y, jointPos.z).vsub(B.position);
-        const axis = new CANNON.Vec3(1,0,0);
-        const c = new CANNON.ConeTwistConstraint(A, B, {
-          pivotA, pivotB, axisA: axis, axisB: axis,
-          angle: opts.angle, twistAngle: opts.twistAngle
+        if (!A||!B) return;
+        // compute joint world pos
+        const worldPos = new THREE.Vector3();
+        get(bKey).bone.getWorldPosition(worldPos);
+        // pivots in local coords
+        const pivotA = new CANNON.Vec3(worldPos.x, worldPos.y, worldPos.z).vsub(A.position);
+        const pivotB = new CANNON.Vec3(worldPos.x, worldPos.y, worldPos.z).vsub(B.position);
+
+        // Constraint
+        const c = new CANNON.ConeTwistConstraint(A,B,{
+          pivotA, pivotB,
+          axisA: new CANNON.Vec3(1,0,0),
+          axisB: new CANNON.Vec3(1,0,0),
+          angle: opts.angle,
+          twistAngle: opts.twist
         });
         world.addConstraint(c);
-      }
 
-      // Define connections with angles
-      connect('hips', 'spine',      { angle: Math.PI/8, twistAngle: Math.PI/16 });
-      connect('spine', 'rightarm',  { angle: Math.PI/6, twistAngle: Math.PI/12 });
-      connect('spine', 'leftarm',   { angle: Math.PI/6, twistAngle: Math.PI/12 });
-      connect('rightarm', 'rightforearm', { angle: 0, twistAngle: Math.PI/2 });
-      connect('leftarm', 'leftforearm',   { angle: 0, twistAngle: Math.PI/2 });
-      connect('hips', 'rightupleg', { angle: Math.PI/8, twistAngle: Math.PI/12 });
-      connect('hips', 'leftupleg',  { angle: Math.PI/8, twistAngle: Math.PI/12 });
-      connect('rightupleg', 'rightleg',    { angle: 0, twistAngle: Math.PI/2 });
-      connect('leftupleg', 'leftleg',      { angle: 0, twistAngle: Math.PI/2 });
+        // Spring for muscle effect
+        const spring = new CANNON.Spring(A,B,{
+          localAnchorA: pivotA,
+          localAnchorB: pivotB,
+          restLength: 0,
+          stiffness: 200,
+          damping: 10
+        });
+        springs.push(spring);
+      });
+
+      // Post-step apply springs
+      world.addEventListener('postStep', () => {
+        springs.forEach(s => s.applyForce());
+      });
 
       // Animation loop
       const clock = new THREE.Clock();
-      function animate() {
+      (function animate() {
         requestAnimationFrame(animate);
         const dt = clock.getDelta();
         world.step(1/60, dt);
 
-        // Sync bone rotation only, preserve initial local position
-        Object.values(parts).forEach(({ bone, body, initialPosition }) => {
-          bone.position.copy(initialPosition);
-          // compute local quaternion from physics world quaternion
+        // sync bones
+        Object.values(parts).forEach(({ bone, body }) => {
+          // preserve initial local position
+          const initial = bone.position.clone();
+          bone.parent.worldToLocal(initial);
+          // position remains as per rig
+          bone.position.copy(bone.position);
+          // rotation from physics
           const wq = new THREE.Quaternion(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
-          const pwq = bone.parent.getWorldQuaternion(new THREE.Quaternion());
-          const lq = wq.clone().premultiply(pwq.invert());
-          bone.quaternion.copy(lq);
+          const parentQ = bone.parent.getWorldQuaternion(new THREE.Quaternion());
+          bone.quaternion.copy(wq.clone().premultiply(parentQ.invert()));
         });
 
         renderer.render(scene, camera);
-      }
-      animate();
+      })();
     });
 
-    // Handle resize
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth/window.innerHeight;
       camera.updateProjectionMatrix();

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Rigged Model + Physics Demo – Better Joints</title>
+  <title>Rigged Model + Physics Demo – Improved Constraints</title>
   <style>
     body { margin: 0; overflow: hidden; }
     #canvas-container { width:100vw; height:100vh; }
@@ -30,22 +30,18 @@
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
     camera.position.set(0, 1.5, 3);
-    const container = document.getElementById('canvas-container');
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    container.appendChild(renderer.domElement);
+    document.getElementById('canvas-container')?.appendChild(renderer.domElement);
 
-    // Controls
+    // Controls & light
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0,1,0);
     controls.update();
-
-    // Lights - fixed addition
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
-    scene.add(hemiLight);
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(5,10,7.5);
-    scene.add(dirLight);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.2));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+    dl.position.set(5,10,7.5);
+    scene.add(dl);
 
     // Physics world
     const world = new CANNON.World();
@@ -57,33 +53,41 @@
     });
     world.addBody(ground);
 
-    // Load model
+    // Constraint helper using ConeTwistConstraint
+    function makeTwist(A, B, swingAngle, twistAngle) {
+      const pivotA = new CANNON.Vec3().copy(B.position).vsub(A.position);
+      const pivotB = new CANNON.Vec3(0,0,0);
+      const axis = new CANNON.Vec3(1,0,0);
+      const c = new CANNON.ConeTwistConstraint(A, B, {
+        pivotA, pivotB, axisA: axis, axisB: axis,
+        angle: swingAngle, twistAngle
+      });
+      world.addConstraint(c);
+    }
+
+    // Load model and setup bodies
     const loader = new GLTFLoader();
     const parts = {};
-    loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', (gltf) => {
+    loader.load('https://threejs.org/examples/models/gltf/Soldier.glb', gltf => {
       const model = gltf.scene;
       scene.add(model);
 
-      // Create physics bodies
+      // Create physics body per bone
       model.traverse(bone => {
         if (!bone.isBone) return;
-        const pos = new THREE.Vector3();
-        bone.getWorldPosition(pos);
+        const pos = new THREE.Vector3(); bone.getWorldPosition(pos);
         const radius = 0.15;
-        const sphere = new CANNON.Sphere(radius);
-        const mass = bone.parent.isBone ? 0.5 : 2;
-        const body = new CANNON.Body({ mass });
-        body.addShape(sphere);
+        const body = new CANNON.Body({ mass: bone.parent.isBone ? 0.5 : 2 });
+        body.addShape(new CANNON.Sphere(radius));
         body.position.set(pos.x, pos.y, pos.z);
         world.addBody(body);
         parts[bone.name.toLowerCase()] = { bone, body };
       });
 
-      // Helper to find parts by name substring
+      // Helper find by substring
       const find = key => parts[Object.keys(parts).find(n => n.includes(key))];
 
-      // Define constraints using dynamic lookup
-      const constraints = [];
+      // Bones
       const hip = find('hips') || find('hip');
       const spine = find('spine');
       const rArm = find('rightarm');
@@ -95,53 +99,22 @@
       const lUpLeg = find('leftupleg') || find('upperleg');
       const lLeg = find('leftleg') || find('lowerleg');
 
-      function addCone(a, b, swing = Math.PI/6, twist = Math.PI/12) {
-        constraints.push({ type: 'cone', A: a, B: b, swing, twist });
-      }
-      function addHinge(a, b, min = -Math.PI/2, max = 0) {
-        constraints.push({ type: 'hinge', A: a, B: b, min, max });
-      }
+      // Apply twist joints
+      if (hip && spine)       makeTwist(hip.body, spine.body, Math.PI/16, Math.PI/16);
+      if (spine && rArm)      makeTwist(spine.body, rArm.body, Math.PI/6, Math.PI/6);
+      if (spine && lArm)      makeTwist(spine.body, lArm.body, Math.PI/6, Math.PI/6);
+      if (rArm && rFore)      makeTwist(rArm.body, rFore.body, 0, Math.PI/2);
+      if (lArm && lFore)      makeTwist(lArm.body, lFore.body, 0, Math.PI/2);
+      if (hip && rUpLeg)      makeTwist(hip.body, rUpLeg.body, Math.PI/8, Math.PI/8);
+      if (hip && lUpLeg)      makeTwist(hip.body, lUpLeg.body, Math.PI/8, Math.PI/8);
+      if (rUpLeg && rLeg)     makeTwist(rUpLeg.body, rLeg.body, 0, Math.PI/2);
+      if (lUpLeg && lLeg)     makeTwist(lUpLeg.body, lLeg.body, 0, Math.PI/2);
 
-      if (hip && spine) addCone(hip.body, spine.body);
-      if (spine && rArm) addCone(spine.body, rArm.body);
-      if (spine && lArm) addCone(spine.body, lArm.body);
-      if (rArm && rFore) addHinge(rArm.body, rFore.body, -Math.PI/2, 0);
-      if (lArm && lFore) addHinge(lArm.body, lFore.body, -Math.PI/2, 0);
-      if (hip && rUpLeg) addCone(hip.body, rUpLeg.body);
-      if (hip && lUpLeg) addCone(hip.body, lUpLeg.body);
-      if (rUpLeg && rLeg) addHinge(rUpLeg.body, rLeg.body, 0, Math.PI/2);
-      if (lUpLeg && lLeg) addHinge(lUpLeg.body, lLeg.body, 0, Math.PI/2);
-
-      // Apply constraints
-      constraints.forEach(c => {
-        if (c.type === 'cone') {
-          const cons = new CANNON.ConeTwistConstraint(c.A, c.B, {
-            pivotA: new CANNON.Vec3().copy(c.B.position).vsub(c.A.position),
-            pivotB: new CANNON.Vec3(0,0,0),
-            axisA: new CANNON.Vec3(1,0,0),
-            axisB: new CANNON.Vec3(1,0,0),
-            angle: c.swing, twistAngle: c.twist
-          });
-          world.addConstraint(cons);
-        } else {
-          const hinge = new CANNON.HingeConstraint(c.A, c.B, {
-            pivotA: new CANNON.Vec3().copy(c.B.position).vsub(c.A.position),
-            pivotB: new CANNON.Vec3(0,0,0),
-            axisA: new CANNON.Vec3(1,0,0),
-            axisB: new CANNON.Vec3(1,0,0)
-          });
-          hinge.setLimits(c.min, c.max);
-          world.addConstraint(hinge);
-        }
-      });
-
-      // Animation loop with correct sync
+      // Animation sync
       const clock = new THREE.Clock();
       (function animate() {
         requestAnimationFrame(animate);
-        const dt = clock.getDelta();
-        world.step(1/60, dt);
-
+        world.step(1/60, clock.getDelta());
         Object.values(parts).forEach(({ bone, body }) => {
           const wp = new THREE.Vector3(body.position.x, body.position.y, body.position.z);
           bone.parent.worldToLocal(wp);
@@ -150,12 +123,11 @@
           const pwq = bone.parent.getWorldQuaternion(new THREE.Quaternion());
           bone.quaternion.copy(wq.clone().premultiply(pwq.invert()));
         });
-
         renderer.render(scene, camera);
       })();
     });
 
-    // Handle resize
+    // Resize
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth/window.innerHeight;
       camera.updateProjectionMatrix();
